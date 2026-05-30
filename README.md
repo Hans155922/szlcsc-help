@@ -11,6 +11,7 @@
 - 立创商城下单时需要凑满指定金额
 - 想从某个品牌中自动寻找低价商品组合
 - 需要指定某些商品必须出现在凑单方案中
+- 需要指定某些商品的采购组数
 - 想避免手动逐个商品计算价格和数量
 
 ## 环境要求
@@ -43,9 +44,25 @@ if __name__ == "__main__":
     # 凑单价格
 
     goods = calculate(brand_id, target_price)
+
     print(f"\n可参与计算的货号数量：{len(goods)}")
 
-    orders = find_best_orders(goods, target=target_price, top_n=5, initial_extra=2)
+    orders = find_best_orders(
+        goods,
+        target=target_price,
+        top_n=5,
+        initial_extra=2,
+        required_codes=[
+            # 只要求包含，不指定数量
+            # "C123456",
+
+            # 只要求包含，不指定数量
+            # ["C234567"],
+
+            # 要求包含，并且采购组数必须是 10
+            # ["C345678", 10],
+        ],
+    )
 
     print_orders(orders)
 ```
@@ -77,7 +94,11 @@ target_price = 16
 返回的凑单方案数量。
 
 ```python
-orders = find_best_orders(goods, target=16, top_n=5)
+orders = find_best_orders(
+    goods,
+    target=16,
+    top_n=5
+)
 ```
 
 ### initial_extra
@@ -87,7 +108,11 @@ orders = find_best_orders(goods, target=16, top_n=5)
 例如：
 
 ```python
-orders = find_best_orders(goods, target=16, initial_extra=2)
+orders = find_best_orders(
+    goods,
+    target=16,
+    initial_extra=2
+)
 ```
 
 表示优先在 `16 ~ 18` 元之间寻找方案。
@@ -138,17 +163,51 @@ orders = find_best_orders(
 
 指定必须包含的商品货号。
 
+`required_codes` 支持三种写法：
+
+```python
+required_codes=[
+    "C123456",        # 必须包含该货号，采购组数不限
+    ["C234567"],      # 必须包含该货号，采购组数不限
+    ["C345678", 10],  # 必须包含该货号，并且采购组数必须是 10
+]
+```
+
+含义如下：
+
+| 写法 | 含义 |
+|---|---|
+| `"C123456"` | 必须包含 `C123456`，采购组数不限 |
+| `["C234567"]` | 必须包含 `C234567`，采购组数不限 |
+| `["C345678", 10]` | 必须包含 `C345678`，采购组数必须是 `10` |
+
+如果只写货号，不写数量，则表示该货号必须出现在凑单方案中，但采购组数由脚本自动计算。
+
+如果写成 `["货号", 数量]`，则表示该货号必须出现在凑单方案中，并且采购组数必须等于指定数量。
+
+示例：
+
 ```python
 orders = find_best_orders(
     goods,
     target=16,
     top_n=5,
     initial_extra=2,
-    required_codes=["C123456", "C234567"]
+    required_codes=[
+        "C123456",
+        ["C234567", 10],
+        ["C345678"]
+    ]
 )
 ```
 
-如果指定的货号没有库存或没有可用价格档，脚本会提示并返回空结果。
+上面的配置表示：
+
+- `C123456` 必须包含，采购组数不限
+- `C234567` 必须包含，采购组数必须是 `10`
+- `C345678` 必须包含，采购组数不限
+
+如果指定的货号没有库存、没有可用价格档，或者指定数量不在可购买范围内，脚本会提示并返回空结果。
 
 ## 使用示例
 
@@ -183,7 +242,32 @@ orders = find_best_orders(
     target=target_price,
     top_n=5,
     initial_extra=2,
-    required_codes=["C123456", "C234567"]
+    required_codes=[
+        "C123456",
+        "C234567"
+    ]
+)
+
+print_orders(orders)
+```
+
+### 指定必须包含某些货号，并指定数量
+
+```python
+brand_id = 12131
+target_price = 16
+
+goods = calculate(brand_id, target_price)
+
+orders = find_best_orders(
+    goods,
+    target=target_price,
+    top_n=5,
+    initial_extra=2,
+    required_codes=[
+        ["C234567", 10],
+        ["C345678", 20]
+    ]
 )
 
 print_orders(orders)
@@ -205,11 +289,11 @@ print_orders(orders)
 ========== 最优凑单方案 ==========
 
 方案 1：总价 = 16.03
-  货号：C123456，数量：3，单价：2.01，小计：6.03
-  货号：C234567，数量：10，单价：1，小计：10
+  货号：C123456，采购组数：3，单价：2.01，未舍入小计：6.03，结算小计：6.03
+  货号：C234567，采购组数：10，单价：1，未舍入小计：10，结算小计：10.00
 
 方案 2：总价 = 16.12
-  货号：C345678，数量：4，单价：4.03，小计：16.12
+  货号：C345678，采购组数：4，单价：4.03，未舍入小计：16.12，结算小计：16.12
 ```
 
 ## 核心函数说明
@@ -277,7 +361,25 @@ find_best_orders(
 | `max_expand_times` | 最大扩大搜索范围次数 |
 | `max_total_states` | 动态规划状态数量上限 |
 | `per_total_limit` | 同一总价最多保留的组合数量 |
-| `required_codes` | 必须包含的货号列表 |
+| `required_codes` | 必须包含的货号列表，可选指定采购组数 |
+
+`required_codes` 示例：
+
+```python
+required_codes=[
+    "C123456",
+    ["C234567"],
+    ["C345678", 10]
+]
+```
+
+说明：
+
+| 写法 | 说明 |
+|---|---|
+| `"C123456"` | 必须包含该货号，采购组数不限 |
+| `["C234567"]` | 必须包含该货号，采购组数不限 |
+| `["C345678", 10]` | 必须包含该货号，采购组数必须是 `10` |
 
 ### print_orders
 
@@ -292,17 +394,18 @@ print_orders(orders)
 - 方案编号
 - 总价
 - 商品货号
-- 购买数量
+- 采购组数
 - 单价
-- 小计
-
+- 未舍入小计
+- 结算小计
 
 ## 注意事项
 
 1. 该工具依赖立创商城网页接口，接口结构变化可能导致脚本失效。
 2. 如果请求被拒绝，可能需要浏览器 Cookie。
 3. 请求过快可能触发限制，脚本中已加入 `time.sleep(0.2)` 降低请求频率。
-4. 本工具仅用于辅助计算，最终价格和库存请以下单页面为准。
+4. `required_codes` 中指定的数量表示采购组数，不一定等同于实际单颗数量，具体取决于商品包装和换算比例。
+5. 本工具仅用于辅助计算，最终价格和库存请以下单页面为准。
 
 ## 常见问题
 
@@ -328,29 +431,24 @@ print_orders(orders)
 - 检查接口返回内容
 - 使用浏览器开发者工具重新确认接口参数
 
-### 为什么有些商品没有参与计算？
+### 为什么指定了货号和数量后没有结果？
 
 可能原因包括：
 
-- 商品没有货号
-- 商品没有库存
-- 商品没有有效价格档
-- 商品价格超过当前搜索范围
-- 商品价格档的起止数量不符合库存限制
+- 指定货号没有库存
+- 指定货号不存在可用价格档
+- 指定数量低于该商品价格档的起购数量
+- 指定数量超过当前库存
+- 指定数量对应的小计已经超过当前搜索范围
+- 加入指定商品后，无法在当前搜索范围内凑出满足条件的组合
 
-### 如何指定必须购买的商品？
+可以尝试：
 
-使用 `required_codes` 参数：
-
-```python
-orders = find_best_orders(
-    goods,
-    target=target_price,
-    top_n=5,
-    initial_extra=2,
-    required_codes=["C123456", "C234567"]
-)
-```
+- 检查货号是否正确
+- 调整指定数量
+- 增大 `initial_extra`
+- 增大 `max_expand_times`
+- 减少必须包含的货号数量
 
 ### 为什么运行时间比较长？
 
