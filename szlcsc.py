@@ -4,28 +4,33 @@ import requests
 from decimal import Decimal, ROUND_HALF_UP
 
 PAGE_SIZE = 30
-SCALE = 10000  # 金额精度，10000 = 保留 4 位小数
 
 
 def D(x):
-    """安全转 Decimal，避免 float 精度问题"""
+    # 安全转 Decimal，避免 float 精度问题
     return Decimal(str(x))
 
 
-def money_to_int(x, scale=SCALE):
-    return int((D(x) * scale).to_integral_value(rounding=ROUND_HALF_UP))
+def round_money(x):
+    # 按官方金额规则四舍五入到 2 位小数。
+    return D(x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def int_to_money(x, scale=SCALE):
-    return Decimal(x) / Decimal(scale)
+def money_to_int(x):
+    # 元转分
+    return int(round_money(x) * 100)
+
+
+def int_to_money(x):
+    return Decimal(x) / Decimal(100)
 
 
 def fmt_money(x):
-    return f"{Decimal(x):.4f}".rstrip("0").rstrip(".")
+    return f"{Decimal(x):.2f}"
 
 
 def get_first_price(product_vo):
-    """取商品第一个价格档，用于判断是否已经超过价格范围"""
+    # 取商品第一个价格档，用于判断是否已经超过价格范围
     price_list = product_vo.get("productPriceList") or []
     if not price_list:
         return None
@@ -154,21 +159,26 @@ def build_product_options(price_ranges, product_code, upper_int):
         price_int = money_to_int(unit_price)
         if price_int <= 0:
             continue
-        max_qty_by_money = upper_int // price_int
+        max_qty_by_money = int(Decimal(upper_int) / Decimal(100) / unit_price) + 2
         real_end_qty = min(end_qty, max_qty_by_money)
         if real_end_qty < start_qty:
             continue
         for qty in range(start_qty, real_end_qty + 1):
-            subtotal_int = price_int * qty
-            # 同一个货号，如果不同买法小计完全一样，只保留一种
-            if subtotal_int in seen_subtotal:
+            raw_subtotal = unit_price * qty
+            subtotal = round_money(raw_subtotal)
+            subtotal_int = money_to_int(subtotal)
+            if subtotal_int > upper_int:
                 continue
-            seen_subtotal.add(subtotal_int)
+            key = subtotal_int
+            if key in seen_subtotal:
+                continue
+            seen_subtotal.add(key)
             options.append(
                 {
                     "code": product_code,
                     "qty": qty,
-                    "price_int": price_int,
+                    "price": unit_price,
+                    "raw_subtotal": raw_subtotal,
                     "subtotal_int": subtotal_int,
                 }
             )
@@ -259,7 +269,8 @@ def find_best_orders(goods, target=16, top_n=5, initial_extra=2, max_expand_time
                             {
                                 "code": item["code"],
                                 "qty": item["qty"],
-                                "price": int_to_money(item["price_int"]),
+                                "price": item["price"],
+                                "raw_subtotal": item["raw_subtotal"],
                                 "subtotal": int_to_money(item["subtotal_int"]),
                             }
                             for item in combo
@@ -281,7 +292,7 @@ def print_orders(orders):
     for index, order in enumerate(orders, 1):
         print(f"\n方案 {index}：总价 = {fmt_money(order['total'])}")
         for item in order["items"]:
-            print(f"  货号：{item['code']}，" f"数量：{item['qty']}，" f"单价：{fmt_money(item['price'])}，" f"小计：{fmt_money(item['subtotal'])}")
+            print(f"  货号：{item['code']}，" f"数量：{item['qty']}，" f"单价：{item['price']}，" f"未舍入小计：{item['raw_subtotal']}，" f"结算小计：{fmt_money(item['subtotal'])}")
 
 
 if __name__ == "__main__":
