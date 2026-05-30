@@ -3,8 +3,6 @@ import time
 import requests
 from decimal import Decimal, ROUND_HALF_UP
 
-PAGE_SIZE = 30
-
 
 def D(x):
     # 安全转 Decimal，避免 float 精度问题
@@ -29,8 +27,14 @@ def fmt_money(x):
     return f"{Decimal(x):.2f}"
 
 
-def get_first_price(product_vo):
-    price_list = product_vo.get("productPriceList") or []
+def get_product_price_list(item):
+    product_vo = item.get("productVO") or {}
+    return item["priceDiscount"].get("priceList") or [] if item.get("priceDiscount") else (product_vo.get("productPriceList") or [])
+
+
+def get_first_price(item):
+    product_vo = item.get("productVO") or {}
+    price_list = get_product_price_list(item)
     if not price_list:
         return None
     ratio = product_vo.get("convesionRatio", 1) or 1
@@ -57,7 +61,7 @@ def get_all(brandIdFilter, maxprice):
     def fetch_page(page):
         params = {
             "currentPage": page,
-            "pageSize": PAGE_SIZE,
+            "pageSize": 30,
             "catalogIdFilter": "",
             "brandIdFilter": brandIdFilter,
             "standardFilter": "",
@@ -96,7 +100,7 @@ def get_all(brandIdFilter, maxprice):
     res.extend(this_page)
     print(f"总数量：{totalcount}")
     print(f"当前第 1 页，已获取 {len(res)}/{totalcount}")
-    total_pages = math.ceil(totalcount / PAGE_SIZE)
+    total_pages = math.ceil(totalcount / 30)
     for page in range(2, total_pages + 1):
         time.sleep(0.2)
         data = fetch_page(page)
@@ -107,8 +111,7 @@ def get_all(brandIdFilter, maxprice):
             break
         res.extend(this_page)
         print(f"当前第 {page} 页，已获取 {len(res)}/{totalcount}")
-        last_product_vo = this_page[-1].get("productVO") or {}
-        last_price = get_first_price(last_product_vo)
+        last_price = get_first_price(this_page[-1])
         if last_price is not None and last_price > D(maxprice) + D(2):
             print(f"已超过价格限制，当前价格为 {last_price}，停止获取")
             break
@@ -121,18 +124,21 @@ def calculate(brandIdFilter, price):
     max_search_price = D(price) + D(2)
     for item in all_goods:
         product_vo = item.get("productVO") or {}
-        product_code = product_vo.get("productCode")
+        product_code = item.get("lightProductCode")
+        product_name = item.get("lightCatalogName")
+        product_model = item.get("lightProductModel")
+        product_ratio = product_vo.get("convesionRatio", 1) or 1
+        product_info = ",".join(f"{k}:{v}" for k, v in (item.get("paramLinkedMap") or {}).items())
         if not product_code:
             continue
         valid_stock = int(product_vo.get("validStockNumber") or 0)
         if valid_stock <= 0:
             continue
-        ratio = product_vo.get("convesionRatio", 1) or 1
-        ratio = D(ratio)
-        product_price_list = product_vo.get("productPriceList") or []
+        ratio = D(product_ratio)
+        product_price_list = get_product_price_list(item)
         price_ranges = []
         for price_item in product_price_list:
-            raw_price = price_item.get("productPrice")
+            raw_price = price_item.get("productPrice") or price_item.get("price")
             if raw_price is None:
                 continue
             unit_price = D(raw_price) * ratio
@@ -143,11 +149,11 @@ def calculate(brandIdFilter, price):
             if unit_price <= max_search_price and start_qty <= end_qty:
                 price_ranges.append([unit_price, start_qty, end_qty])
         if price_ranges:
-            res.append([price_ranges, product_code])
+            res.append([price_ranges, product_code, product_ratio, product_name, product_model, product_info])
     return res
 
 
-def build_product_options(price_ranges, product_code, upper_int):
+def build_product_options(price_ranges, product_code, upper_int, product_ratio, product_name=None, product_model=None, product_info=None):
     options = []
     seen_subtotal = set()
     for unit_price, start_qty, end_qty in price_ranges:
@@ -159,8 +165,7 @@ def build_product_options(price_ranges, product_code, upper_int):
         if real_end_qty < start_qty:
             continue
         for qty in range(start_qty, real_end_qty + 1):
-            raw_subtotal = unit_price * qty
-            subtotal = round_money(raw_subtotal)
+            subtotal = round_money(unit_price * qty)
             subtotal_int = money_to_int(subtotal)
             if subtotal_int > upper_int:
                 continue
@@ -171,9 +176,12 @@ def build_product_options(price_ranges, product_code, upper_int):
             options.append(
                 {
                     "code": product_code,
+                    "ratio": product_ratio,
+                    "name": product_name,
+                    "model": product_model,
+                    "info": product_info,
                     "qty": qty,
                     "price": unit_price,
-                    "raw_subtotal": raw_subtotal,
                     "subtotal_int": subtotal_int,
                 }
             )
@@ -236,9 +244,10 @@ def find_best_orders(
         upper = D(target) + extra
         upper_int = money_to_int(upper)
         product_options = []
-        for price_ranges, product_code in goods:
+        for goods_item in goods:
+            price_ranges, product_code, product_ratio, product_name, product_model, product_info = goods_item
             product_code = str(product_code).strip()
-            options = build_product_options(price_ranges, product_code, upper_int)
+            options = build_product_options(price_ranges, product_code, upper_int, product_ratio, product_name, product_model, product_info)
             if product_code in required_qty:
                 need_qty = required_qty[product_code]
                 # options = [opt for opt in options if opt["qty"] == need_qty]
@@ -315,9 +324,12 @@ def find_best_orders(
                         "items": [
                             {
                                 "code": item["code"],
+                                "name": item.get("name"),
+                                "model": item.get("model"),
+                                "info": item.get("info"),
                                 "qty": item["qty"],
                                 "price": item["price"],
-                                "raw_subtotal": item["raw_subtotal"],
+                                "ratio": item.get("ratio"),
                                 "subtotal": int_to_money(item["subtotal_int"]),
                             }
                             for item in combo
@@ -334,15 +346,26 @@ def print_orders(orders):
     if not orders:
         print("没有找到合适的凑单方案")
         return
+
     print("\n========== 最优凑单方案 ==========")
     for index, order in enumerate(orders, 1):
         print(f"\n方案 {index}：总价 = {fmt_money(order['total'])}")
         for item in order["items"]:
-            print(f"  货号：{item['code']}，" f"采购组数：{item['qty']}，" f"单价：{item['price']}，" f"未舍入小计：{item['raw_subtotal']}，" f"结算小计：{fmt_money(item['subtotal'])}")
+            ratio = D(item.get("ratio") or 1)
+
+            print(
+                f"  货号：{item['code']}，"
+                f"名称：{item.get('name') or ''}，"
+                f"型号：{item.get('model') or ''}，"
+                f"参数：{item.get('info') or ''}，"
+                f"件数：{item['qty'] * ratio}，"
+                f"单价：{fmt_money(D(item['price']) / ratio)}，"
+                f"结算小计：{fmt_money(item['subtotal'])}"
+            )
 
 
 if __name__ == "__main__":
-    brand_id = 12131
+    brand_id = 12345
     # 品牌代码
     target_price = 16
     # 凑单价格
@@ -362,5 +385,3 @@ if __name__ == "__main__":
             # ["C345678", 10],
         ],
     )
-
-    print_orders(orders)
