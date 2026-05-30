@@ -179,7 +179,7 @@ def build_product_options(price_ranges, product_code, upper_int):
 def find_best_orders(goods, target=16, top_n=5, initial_extra=2, max_expand_times=6, max_total_states=1000000, per_total_limit=5, required_codes=None):
     """
     goods	calculate() 返回的商品价格档数据
-    target	目标金额，要求结果总价 大于 这个值
+    target	目标金额，要求结果总价 大于等于 这个值
     top_n	返回几个凑单方案，例如 5
     initial_extra	初始搜索范围，例如 2 表示先找 16 ~ 18 元之间的方案
     max_expand_times	如果找不到足够方案，最多扩大搜索范围几次
@@ -234,8 +234,8 @@ def find_best_orders(goods, target=16, top_n=5, initial_extra=2, max_expand_time
             if not states:
                 break
             if len(states) > max_total_states:
-                over_keys = sorted(key for key in states.keys() if key > target_int)
-                under_keys = sorted((key for key in states.keys() if key <= target_int), reverse=True)
+                over_keys = sorted(key for key in states.keys() if key >= target_int)
+                under_keys = sorted((key for key in states.keys() if key < target_int), reverse=True)
                 keep_over_count = min(len(over_keys), top_n * 50)
                 keep_under_count = max_total_states - keep_over_count
                 keep_keys = set(over_keys[:keep_over_count] + under_keys[:keep_under_count] + [0])
@@ -243,7 +243,7 @@ def find_best_orders(goods, target=16, top_n=5, initial_extra=2, max_expand_time
             print(f"已处理 {index}/{len(product_options)} 个货号，当前状态数：{len(states)}")
         results = []
         for total_int in sorted(states.keys()):
-            if total_int <= target_int:
+            if total_int < target_int:
                 continue
             for combo in states[total_int]:
                 if not combo:
