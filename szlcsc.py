@@ -12,7 +12,7 @@ def D(x):
 
 
 def round_money(x):
-    # 按官方金额规则四舍五入到 2 位小数。
+    # 按官方金额规则四舍五入到 2 位小数
     return D(x).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
@@ -30,11 +30,9 @@ def fmt_money(x):
 
 
 def get_first_price(product_vo):
-    # 取商品第一个价格档，用于判断是否已经超过价格范围
     price_list = product_vo.get("productPriceList") or []
     if not price_list:
         return None
-
     ratio = product_vo.get("convesionRatio", 1) or 1
     return D(price_list[0].get("productPrice", 0)) * D(ratio)
 
@@ -80,7 +78,6 @@ def get_all(brandIdFilter, maxprice):
             "demandNumber": "",
             "satisfyStockType": "",
         }
-
         response = session.get(base_url, params=params, timeout=15)
         if response.status_code != 200:
             print("请求失败")
@@ -145,10 +142,8 @@ def calculate(brandIdFilter, price):
             end_qty = min(ep_number, valid_stock)
             if unit_price <= max_search_price and start_qty <= end_qty:
                 price_ranges.append([unit_price, start_qty, end_qty])
-
         if price_ranges:
             res.append([price_ranges, product_code])
-
     return res
 
 
@@ -186,20 +181,55 @@ def build_product_options(price_ranges, product_code, upper_int):
     return options
 
 
-def find_best_orders(goods, target=16, top_n=5, initial_extra=2, max_expand_times=6, max_total_states=1000000, per_total_limit=5, required_codes=None):
-    """
-    goods	calculate() 返回的商品价格档数据
-    target	目标金额，要求结果总价 大于等于 这个值
-    top_n	返回几个凑单方案，例如 5
-    initial_extra	初始搜索范围，例如 2 表示先找 16 ~ 18 元之间的方案
-    max_expand_times	如果找不到足够方案，最多扩大搜索范围几次
-    max_total_states	动态规划状态数量上限，越大越准但越慢
-    per_total_limit	同一个总价最多保留几个不同组合
-    required_codes	必须包含的货号列表，例如 ["C123456"]
-    """
+def parse_required_codes(required_codes):
     if required_codes is None:
         required_codes = []
-    required_codes = set(str(code).strip() for code in required_codes if str(code).strip())
+    required_code_set = set()
+    required_qty = {}
+    for item in required_codes:
+        if isinstance(item, (list, tuple)):
+            if not item:
+                continue
+            code = str(item[0]).strip()
+            if not code:
+                continue
+            required_code_set.add(code)
+            if len(item) >= 2 and item[1] not in (None, ""):
+                qty = int(item[1])
+                if qty > 0:
+                    required_qty[code] = qty
+        else:
+            code = str(item).strip()
+            if code:
+                required_code_set.add(code)
+    return required_code_set, required_qty
+
+
+def find_best_orders(
+    goods,
+    target=16,
+    top_n=5,
+    initial_extra=2,
+    max_expand_times=6,
+    max_total_states=1000000,
+    per_total_limit=5,
+    required_codes=None,
+):
+    """
+    goods               calculate() 返回的商品价格档数据
+    target              目标金额，要求结果总价大于等于这个值
+    top_n               返回几个凑单方案，例如 5
+    initial_extra       初始搜索范围，例如 2 表示先找 16 ~ 18 元之间的方案
+    max_expand_times    如果找不到足够方案，最多扩大搜索范围几次
+    max_total_states    动态规划状态数量上限，越大越准但越慢
+    per_total_limit     同一个总价最多保留几个不同组合
+
+    required_codes 支持：
+        ["C123456"]                  必须包含 C123456，数量不限
+        [["C123456", 10]]            必须包含 C123456，数量必须是 10
+        ["C123456", ["C234567", 5]]  C123456 数量不限，C234567 数量必须是 5
+    """
+    required_codes, required_qty = parse_required_codes(required_codes)
     target_int = money_to_int(target)
     for expand_index in range(max_expand_times + 1):
         extra = D(initial_extra) * (D(2) ** expand_index)
@@ -209,21 +239,27 @@ def find_best_orders(goods, target=16, top_n=5, initial_extra=2, max_expand_time
         for price_ranges, product_code in goods:
             product_code = str(product_code).strip()
             options = build_product_options(price_ranges, product_code, upper_int)
+            if product_code in required_qty:
+                need_qty = required_qty[product_code]
+                # options = [opt for opt in options if opt["qty"] == need_qty]
+                # 如果这个指定货号写了数量，则只保留这个数量
+                options = [opt for opt in options if opt["qty"] >= need_qty]
+                # 如果这个指定货号写了数量，则只保留这个数量及以上的选项
             if options:
                 product_options.append((product_code, options))
-
         available_codes = {code for code, _ in product_options}
         missing_codes = required_codes - available_codes
         if missing_codes:
             print("以下指定货号没有可用价格档，无法参与凑单：")
             for code in missing_codes:
-                print(" ", code)
+                if code in required_qty:
+                    print(f"  {code}，指定数量：{required_qty[code]}")
+                else:
+                    print(f"  {code}")
             return []
         states = {0: [[]]}
         for index, (product_code, options) in enumerate(product_options, 1):
             old_states = list(states.items())
-            # 普通货号：可以跳过
-            # 指定必须包含的货号：不能跳过，必须选一个数量
             if product_code in required_codes:
                 new_states = {}
             else:
@@ -259,8 +295,19 @@ def find_best_orders(goods, target=16, top_n=5, initial_extra=2, max_expand_time
                 if not combo:
                     continue
                 combo_codes = {item["code"] for item in combo}
-                # 双重保险：确保所有指定货号都在方案里
                 if not required_codes.issubset(combo_codes):
+                    continue
+                qty_ok = True
+                for code, need_qty in required_qty.items():
+                    real_qty = None
+                    for item in combo:
+                        if item["code"] == code:
+                            real_qty = item["qty"]
+                            break
+                    if real_qty != need_qty:
+                        qty_ok = False
+                        break
+                if not qty_ok:
                     continue
                 results.append(
                     {
@@ -280,7 +327,6 @@ def find_best_orders(goods, target=16, top_n=5, initial_extra=2, max_expand_time
                 if len(results) >= top_n:
                     return results[:top_n]
         print(f"在 {target} 到 {upper} 范围内没有找到足够方案，扩大搜索范围...")
-
     return results[:top_n]
 
 
@@ -292,7 +338,7 @@ def print_orders(orders):
     for index, order in enumerate(orders, 1):
         print(f"\n方案 {index}：总价 = {fmt_money(order['total'])}")
         for item in order["items"]:
-            print(f"  货号：{item['code']}，" f"数量：{item['qty']}，" f"单价：{item['price']}，" f"未舍入小计：{item['raw_subtotal']}，" f"结算小计：{fmt_money(item['subtotal'])}")
+            print(f"  货号：{item['code']}，" f"采购组数：{item['qty']}，" f"单价：{item['price']}，" f"未舍入小计：{item['raw_subtotal']}，" f"结算小计：{fmt_money(item['subtotal'])}")
 
 
 if __name__ == "__main__":
@@ -302,6 +348,19 @@ if __name__ == "__main__":
     # 凑单价格
     goods = calculate(brand_id, target_price)
     print(f"\n可参与计算的货号数量：{len(goods)}")
-    orders = find_best_orders(goods, target=target_price, top_n=5, initial_extra=2)
-    # orders = find_best_orders(goods, target=target_price, top_n=5, initial_extra=2, required_codes=["C123456", "C234567"])
+    orders = find_best_orders(
+        goods,
+        target=target_price,
+        top_n=5,
+        initial_extra=2,
+        required_codes=[
+            # 只要求包含，不指定数量
+            # "C123456",
+            # 只要求包含，不指定数量
+            # ["C234567"],
+            # 要求包含，并且数量必须是 10
+            # ["C345678", 10],
+        ],
+    )
+
     print_orders(orders)
